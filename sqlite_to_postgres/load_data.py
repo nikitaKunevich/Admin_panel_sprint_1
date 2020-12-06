@@ -1,20 +1,44 @@
+import argparse
+import contextlib
 import sqlite3
 
 import psycopg2
-from psycopg2.extensions import connection as _connection
 from psycopg2.extras import DictCursor
 
-
-def load_from_sqlite(connection: sqlite3.Connection, pg_conn: _connection):
-    """Основной метод загрузки данных из SQLite в Postgres"""
-    # postgres_saver = PostgresSaver(pg_conn)
-    # sqlite_loader = SQLiteLoader(connection)
-
-    # data = sqlite_loader.load_movies()
-    # postgres_saver.save_all_data(data)
+from etl import (fetch_sqlite_data, migrate_data_to_new_schema,
+                 sqlite_dict_connection_factory, write_data_to_postgres)
 
 
-if __name__ == '__main__':
-    dsl = {'dbname': 'movies_database', 'user': 'postgres', 'password': 1234, 'host': '127.0.0.1', 'port': 5432}
-    with sqlite3.connect('db.sqlite') as sqlite_conn, psycopg2.connect(**dsl, cursor_factory=DictCursor) as pg_conn:
-        load_from_sqlite(sqlite_conn, pg_conn)
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Migration script for getting movie data from sqlite db "
+                    "and storing it in PostgreSQL in different scheme."
+    )
+
+    parser.add_argument("--from", dest="sqlite_db_path", default="db.sqlite",
+                        help="Путь к файлу SQLite с данными для миграции.", required=True)
+    parser.add_argument("--to", dest="postgres_dsn", default="dbname=postgresql user=postgresql",
+                        help="DSN в postgreSQL формате для подключения к базе.", required=True)
+    parser.add_argument("--init", dest="postgres_init_sql", default="film_work_scheme.sql",
+                        help="Скрипт с инициализацией новой схемы таблиц.", required=True)
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+    # noinspection PyTypeChecker
+    with contextlib.closing(sqlite3.connect(args.sqlite_db_path,
+                                            factory=sqlite_dict_connection_factory)) as sqlite_connection:
+        old_schema_data = fetch_sqlite_data(sqlite_connection)
+
+    processed_data = migrate_data_to_new_schema(old_schema_data)
+
+    psycopg2.extras.register_uuid()
+    print(args.postgres_dsn)
+    with psycopg2.connect(args.postgres_dsn) as postgres_connection:
+        # run init script
+        with postgres_connection.cursor() as curs:
+            init_sql = open(args.postgres_init_sql, encoding="utf-8").read()
+            curs.execute(init_sql)
+        write_data_to_postgres(processed_data, postgres_connection)
