@@ -19,7 +19,7 @@ def parse_args():
                         help="Путь к файлу SQLite с данными для миграции.", required=True)
     parser.add_argument("--to", dest="postgres_dsn", default="dbname=postgresql user=postgresql",
                         help="DSN в postgreSQL формате для подключения к базе.", required=True)
-    parser.add_argument("--init", dest="postgres_init_sql", default="film_work_scheme.sql",
+    parser.add_argument("--init", dest="postgres_init_sql", default="postgres_init.sql",
                         help="Скрипт с инициализацией новой схемы таблиц.", required=True)
     return parser.parse_args()
 
@@ -35,7 +35,6 @@ if __name__ == "__main__":
     processed_data = migrate_data_to_new_schema(old_schema_data)
 
     psycopg2.extras.register_uuid()
-    print(args.postgres_dsn)
     with psycopg2.connect(args.postgres_dsn) as postgres_connection:
         # run init script
         with postgres_connection.cursor() as curs:

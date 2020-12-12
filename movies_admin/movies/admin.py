@@ -1,6 +1,6 @@
 from django.contrib import admin
 
-from movies.models import FilmWork, Genre, FilmWorkPerson, Person
+from movies.models import FilmWork, FilmWorkPerson, Genre, Person
 
 
 class PersonRoleInline(admin.TabularInline):
@@ -11,11 +11,7 @@ class PersonRoleInline(admin.TabularInline):
 @admin.register(FilmWork)
 class FilmworkAdmin(admin.ModelAdmin):
     list_display = ('title', 'type', 'creation_date', 'rating')
-
-    # фильтрация в списке
     list_filter = ('type', 'rating')
-
-    # поиск по полям
     search_fields = ('title', 'description', 'id')
 
     fields = ('title', 'type', 'description', 'creation_date', 'certificate',

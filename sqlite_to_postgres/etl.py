@@ -2,25 +2,28 @@
 Модуль мигрирует данные о фильмах из SQLite в PostgreSQL в новую схему.
 """
 
-# todo: есть невалидные id актеров и писателей (с именами n/a, ''), их надо убрат их всех таблиц.
-
 import json
 import sqlite3
-from dataclasses import astuple, dataclass, field
-from datetime import datetime, date
-from typing import Dict, List, Optional, Sequence
-from uuid import UUID, uuid4
+from dataclasses import astuple
+from typing import List, Sequence, Callable, Any
+from uuid import uuid4
 
 import psycopg2
 import psycopg2.extras
 
+from sqlite_to_postgres.models import (
+    OriginalMovie, OriginalMovieActors, OriginalActors, OriginalWriters,
+    OriginalData, TransformedMovie, TransformedPerson, TransformedMoviePerson,
+    TransformedGenre, TransformedMovieGenre,
+    TransformedData)
+
 
 def sqlite_dict_factory(cursor, row):
-    """SQLite dict_factory."""
-    d = {}
-    for idx, col in enumerate(cursor.description):
-        d[col[0]] = row[idx]
-    return d
+    """Фабрика для создания словарей из срок таблицы, где ключи — названия столбцов."""
+    row_dict = {}
+    for idx, column in enumerate(cursor.description):
+        row_dict[column[0]] = row[idx]
+    return row_dict
 
 
 def sqlite_dict_connection_factory(*args, **kwargs):
@@ -38,109 +41,6 @@ def to_none_if_empty(value):
         return None
     else:
         return value
-
-
-# -------------original tables-----------------
-@dataclass
-class OriginalMovie:
-    id: str
-    genre: Optional[str]
-    director: Optional[str]
-    title: str
-    plot: Optional[str]
-    imdb_rating: Optional[str]
-    writers: List[str]
-
-    def get_genres(self) -> List[str]:
-        genres = self.genre.split(", ") if self.genre else []
-        return list(set(genres))
-
-    def get_directors(self) -> List[str]:
-        directors = self.director.split(", ") if self.director else []
-        return list(set(directors))
-
-    def to_transformed_movie(self) -> "TransformedMovie":
-        return TransformedMovie(
-            id=uuid4(),
-            title=self.title,
-            description=self.plot,
-            rating=float(self.imdb_rating) if self.imdb_rating else None,
-        )
-
-
-OriginalId = str
-OriginalActorId = int
-Name = str
-OriginalMovieActors = Dict[OriginalId, List[OriginalActorId]]
-OriginalActors = Dict[OriginalActorId, Name]
-OriginalWriters = Dict[OriginalId, Name]
-
-
-@dataclass
-class OriginalData:
-    movies: List[OriginalMovie]
-    movie_actors: OriginalMovieActors
-    actor_names: OriginalActors
-    writer_names: OriginalWriters
-
-
-# ------------------ transformed tables ------------------------
-@dataclass
-class TransformedMovie:
-    id: UUID
-    title: str
-    description: Optional[str] = None
-    creation_date: Optional[date] = None
-    certificate: Optional[str] = None
-    file_path: Optional[str] = None
-    rating: Optional[float] = None
-    type: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
-
-
-@dataclass
-class TransformedPerson:
-    id: UUID
-    full_name: str
-    birth_date: Optional[date] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
-
-
-@dataclass
-class TransformedMoviePerson:
-    id: UUID
-    movie_id: UUID
-    person_id: UUID
-    role: str
-    created_at: datetime = field(default_factory=datetime.utcnow)
-
-
-@dataclass
-class TransformedGenre:
-    id: UUID
-    name: str
-    description: Optional[str] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
-
-
-@dataclass
-class TransformedMovieGenre:
-    id: UUID
-    movie_id: UUID
-    genre_id: UUID
-    created_at: datetime = field(default_factory=datetime.utcnow)
-
-
-@dataclass
-class TransformedData:
-    movies: List[TransformedMovie]
-    movie_persons: List[TransformedMoviePerson]
-    persons: List[TransformedPerson]
-    movie_genres: List[TransformedMovieGenre]
-    genres: List[TransformedGenre]
 
 
 def clean_original_movie_fields(movie):
@@ -213,16 +113,58 @@ def fetch_sqlite_data(connection) -> OriginalData:
     )
 
 
+#
+# def transformed_person_to
+#     for object_id in original_objects:
+#         if object_id not in old_id_to_new_id:
+#             new_id = uuid4()
+#             old_id_to_new_id[object_id] = new_id
+#             new_objects.append(TransformedPerson(id=person_id, full_name=director))
+#         movie_person = TransformedMoviePerson(uuid4(), transformed_movie.id, added_directors[director], "director")
+#         transformed_movie_persons.append(movie_person)
+#
+# #
+
+# in: old_persons, already_added_persons
+# out: transformed_persons,
+# for tp in transf_persons:
+#   tp.append(TMP(id(), tp.id,
+def update_transformed_persons(original_persons, transformed_persons,
+                               persons_cache, name_getter: Callable[[Any], str]):
+    for person in original_persons:
+        if person not in persons_cache:
+            transformed_person = TransformedPerson(id=uuid4(), full_name=name_getter(person))
+            persons_cache[person] = transformed_person.id
+            transformed_persons.append(transformed_person)
+
+
+def update_transformed_genres(original_movie, transformed_genres, genres_name_to_new_id):
+    for genre in original_movie.get_genres():
+        if genre not in genres_name_to_new_id:
+            transformed_genre = TransformedGenre(id=uuid4(), name=genre)
+            genres_name_to_new_id[genre] = transformed_genre.id
+            transformed_genres.append(transformed_genre)
+
+
+def get_transformed_movie_persons(transformed_movie, original_persons, persons_cache, role):
+    transformed_movie_persons = []
+    for original_id in original_persons:
+        movie_person = TransformedMoviePerson(uuid4(), transformed_movie.id,
+                                              persons_cache[original_id], role)
+        transformed_movie_persons.append(movie_person)
+    return transformed_movie_persons
+
+
 def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
     """Трансформируем данные из старой схемы в новую схему."""
 
     cleaned_movies = [clean_original_movie_fields(movie) for movie in original_data.movies]
 
     # Кэш old_id -> new_id уже созданных объектов.
-    added_directors = dict()  # name -> id
-    added_genres = dict()  # name -> id
-    added_actors = dict()  # old_id -> new_id
-    added_writers = dict()  # old_id -> new_id
+    directors_name_to_new_id = dict()  # name -> id
+    genres_name_to_new_id = dict()  # name -> id
+    actors_old_id_to_new_id = dict()  # old_id -> new_id
+    writers_old_id_to_new_id = dict()  # old_id -> new_id
 
     transformed_movie_persons: List[TransformedMoviePerson] = []
     transformed_movie_genres: List[TransformedMovieGenre] = []
@@ -235,45 +177,54 @@ def migrate_data_to_new_schema(original_data: OriginalData) -> TransformedData:
         transformed_movie = original_movie.to_transformed_movie()
         transformed_movies.append(transformed_movie)
 
-        # Суть всех циклов ниже одинаковая:
-        # Среди всех old_id, для которых я еще не создал новые объекты -> создать новый объект.
-        # И добавить для него связь фильм-объект.
-
         # Создание объектов таблиц genre и movie_genre.
+        update_transformed_genres(original_movie,
+                                  transformed_genres,
+                                  genres_name_to_new_id)
+
         for genre in original_movie.get_genres():
-            if genre not in added_genres:
-                genre_id = uuid4()
-                added_genres[genre] = genre_id
-                transformed_genres.append(TransformedGenre(id=genre_id, name=genre))
-            movie_genre = TransformedMovieGenre(uuid4(), transformed_movie.id, added_genres[genre])
+            movie_genre = TransformedMovieGenre(uuid4(),
+                                                transformed_movie.id,
+                                                genres_name_to_new_id[genre])
             transformed_movie_genres.append(movie_genre)
 
         # ------------ Создание объектов таблиц person и movie_person. --------------------
-        for director in original_movie.get_directors():
-            if director not in added_directors:
-                person_id = uuid4()
-                added_directors[director] = person_id
-                transformed_persons.append(TransformedPerson(id=person_id, full_name=director))
-            movie_person = TransformedMoviePerson(uuid4(), transformed_movie.id, added_directors[director], "director")
-            transformed_movie_persons.append(movie_person)
 
-        for actor_id in original_data.movie_actors[original_movie.id]:
-            if actor_id not in added_actors:
-                fullname = original_data.actor_names[actor_id]
-                person_id = uuid4()
-                added_actors[actor_id] = person_id
-                transformed_persons.append(TransformedPerson(id=person_id, full_name=fullname))
-            movie_person = TransformedMoviePerson(uuid4(), transformed_movie.id, added_actors[actor_id], "actor")
-            transformed_movie_persons.append(movie_person)
+        # Обновляем список режиссеров
+        update_transformed_persons(original_movie.get_directors(),
+                                   transformed_persons,
+                                   directors_name_to_new_id,
+                                   lambda id_: id_)
 
-        for writer_id in original_movie.writers:
-            if writer_id not in added_writers:
-                fullname = original_data.writer_names[writer_id]
-                person_id = uuid4()
-                added_writers[writer_id] = person_id
-                transformed_persons.append(TransformedPerson(id=person_id, full_name=fullname))
-            movie_person = TransformedMoviePerson(uuid4(), transformed_movie.id, added_writers[writer_id], "writer")
-            transformed_movie_persons.append(movie_person)
+        movie_directors = get_transformed_movie_persons(
+            transformed_movie, original_movie.get_directors(),
+            directors_name_to_new_id, 'director'
+        )
+        transformed_movie_persons.extend(movie_directors)
+
+        # Обновляем список актеров
+        update_transformed_persons(original_data.movie_actors[original_movie.id],
+                                   transformed_persons,
+                                   actors_old_id_to_new_id,
+                                   lambda old_id: original_data.actor_names[old_id])
+
+        movie_actors = get_transformed_movie_persons(
+            transformed_movie, original_data.movie_actors[original_movie.id],
+            actors_old_id_to_new_id, 'actor'
+        )
+        transformed_movie_persons.extend(movie_actors)
+
+        # Обновляем список писателей
+        update_transformed_persons(original_movie.writers,
+                                   transformed_persons,
+                                   writers_old_id_to_new_id,
+                                   lambda old_id: original_data.writer_names[old_id])
+
+        movie_writers = get_transformed_movie_persons(
+            transformed_movie, original_movie.writers,
+            writers_old_id_to_new_id, 'actor'
+        )
+        transformed_movie_persons.extend(movie_writers)
 
     return TransformedData(
         movies=transformed_movies,
@@ -296,7 +247,7 @@ def insert_rows_into_table(cursor, table_name: str, rows: Sequence[Sequence]):
 
 
 def write_data_to_postgres(transformed_data: TransformedData, connection):
-    """Записываем трансформарованные данные в PostgreSQL."""
+    """Записываем трансформированные данные в PostgreSQL."""
 
     psycopg2.extras.register_uuid()  # Для конвертации python UUID в psql ::uuid.
 
